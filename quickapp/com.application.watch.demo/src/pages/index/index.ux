@@ -1,0 +1,130 @@
+<template>
+  <div class="container">
+    <text class="app-title">分心洞察</text>
+    <text class="app-subtitle">专注力记录工具</text>
+
+    <text class="section-label">专注模式</text>
+    <div class="mode-card" style="background-color: {{currentMode === 'normal' ? '#1A3A1A' : '#1A1A1A'}}" onclick="selectMode('normal')">
+      <text class="mode-name">正常模式</text>
+      <text class="mode-desc">静默记录 · 无提醒</text>
+    </div>
+
+    <div class="mode-card" style="background-color: {{currentMode === 'focus' ? '#3A1A1A' : '#1A1A1A'}}" onclick="selectMode('focus')">
+      <text class="mode-name">高效模式</text>
+      <text class="mode-desc">分心震动提醒</text>
+    </div>
+
+    <text class="section-label">数据源</text>
+    <div class="mode-card" style="background-color: {{dataSource === 'sensor' ? '#1A2A3A' : '#1A1A1A'}}" onclick="selectSource('sensor')">
+      <text class="mode-name">真实传感器</text>
+      <text class="mode-desc">真机/决赛使用 · 抬手检测分心</text>
+    </div>
+
+    <div class="mode-card" style="background-color: {{dataSource === 'demo' ? '#3A2A1A' : '#1A1A1A'}}" onclick="selectSource('demo')">
+      <text class="mode-name">演示模式（推荐模拟器）</text>
+      <text class="mode-desc">每 20~35 秒模拟一次分心</text>
+    </div>
+
+    <div class="start-btn" onclick="startFocus">
+      <text class="start-text">开始专注</text>
+    </div>
+  </div>
+</template>
+
+<script>
+import router from '@system.router'
+
+export default {
+  private: {
+    currentMode: 'normal',
+    dataSource: 'demo'
+  },
+
+  selectMode(mode) {
+    this.currentMode = mode
+  },
+
+  selectSource(src) {
+    this.dataSource = src
+  },
+
+  startFocus() {
+    router.push({
+      uri: '/pages/timer',
+      params: {
+        mode: this.currentMode,
+        source: this.dataSource
+      }
+    })
+  }
+}
+</script>
+
+<style>
+.container {
+  flex-direction: column;
+  align-items: center;
+  background-color: #000000;
+  padding: 12px 16px;
+}
+
+.app-title {
+  font-size: 24px;
+  font-weight: bold;
+  color: #ffffff;
+  margin-top: 4px;
+}
+
+.app-subtitle {
+  font-size: 12px;
+  color: #888888;
+  margin-top: 2px;
+  margin-bottom: 10px;
+}
+
+.section-label {
+  font-size: 11px;
+  color: #888888;
+  align-self: flex-start;
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+.mode-card {
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  background-color: #1A1A1A;
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+}
+
+.mode-name {
+  font-size: 15px;
+  font-weight: bold;
+  color: #ffffff;
+  margin-bottom: 2px;
+}
+
+.mode-desc {
+  font-size: 11px;
+  color: #aaaaaa;
+}
+
+.start-btn {
+  width: 100%;
+  height: 40px;
+  background-color: #4CAF50;
+  border-radius: 20px;
+  justify-content: center;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.start-text {
+  font-size: 16px;
+  font-weight: bold;
+  color: #ffffff;
+}
+</style>

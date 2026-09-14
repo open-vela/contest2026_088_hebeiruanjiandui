@@ -1,0 +1,645 @@
+<template>
+  <div class="container">
+    <text class="mode-label">{{mode === 'focus' ? '高效模式' : '正常模式'}}</text>
+
+    <text class="timer-display">{{formatTime(elapsedTime)}}</text>
+    <text class="timer-label">专注时长</text>
+
+    <text class="distraction-count">分心 {{distractionCount}} 次</text>
+
+    <text class="sedentary-alert" if="{{showSedentary30}}">久坐提醒：已专注 30 分钟，建议起身活动一下</text>
+    <text class="sedentary-alert-strong" if="{{showSedentary60}}">健康警报：已专注 1 小时且无任何活动，请立即起身！</text>
+
+    <text class="observing-alert" if="{{observingDistraction}}">检测到动作...</text>
+    <text class="distraction-alert" if="{{showPhysicalAlert}}">确认分心</text>
+    <text class="zone-alert" if="{{showZoningAlert}}">发呆走神</text>
+    <text class="fidget-alert" if="{{showFidgetAlert}}">烦躁不安</text>
+
+    <text class="vibrate-alert" if="{{showVibrateAlert}}">震! 震! 震!</text>
+
+    <text class="sim-label" if="{{useSimulated}}">[模拟传感器]</text>
+
+    <div class="btn-row" if="{{status === 'idle'}}">
+      <div class="btn btn-start" onclick="startTimer">
+        <text class="btn-text">开始</text>
+      </div>
+    </div>
+
+    <div class="btn-row" if="{{status === 'running'}}">
+      <div class="btn btn-pause" onclick="pauseTimer">
+        <text class="btn-text">暂停</text>
+      </div>
+      <div class="btn btn-stop" onclick="stopTimer">
+        <text class="btn-text">结束</text>
+      </div>
+    </div>
+
+    <div class="btn-row" if="{{status === 'paused'}}">
+      <div class="btn btn-start" onclick="resumeTimer">
+        <text class="btn-text">继续</text>
+      </div>
+      <div class="btn btn-stop" onclick="stopTimer">
+        <text class="btn-text">结束</text>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+import sensor from '@system.sensor'
+import vibrator from '@system.vibrator'
+import router from '@system.router'
+
+export default {
+  protected: {
+    mode: 'normal',
+    source: 'sensor'
+  },
+
+  private: {
+    status: 'idle',
+    startTime: 0,
+    sessionStartTime: 0,
+    elapsedTime: 0,
+    distractionCount: 0,
+    distractions: [],
+    isDistracted: false,
+    distractionType: '',
+    observingDistraction: false,
+    potentialDistractionStart: 0,
+    distractionStartTime: 0,
+    useSimulated: false,
+    sensorDataReceived: false,
+    timerInterval: null,
+    sensorSubscribed: false,
+    prevMagnitude: 9.8,
+    distractionCooldown: false,
+    simTimeout: null,
+    dataChangeInterval: null,
+    showVibrateAlert: false,
+    showPhysicalAlert: false,
+    showZoningAlert: false,
+    showFidgetAlert: false,
+    showSedentary30: false,
+    showSedentary60: false,
+    sedentaryAlertShown30: false,
+    lowDeltaCount: 0,
+    MIN_DISTRACTION_DURATION: 20000,
+
+    stillnessStartTime: 0,
+    ZONE_OUT_THRESHOLD: 120000,
+
+    fidgetCount: 0,
+    fidgetWindowStart: 0,
+    FIDGET_MIN: 0.8,
+    FIDGET_MAX: 3.0,
+    FIDGET_THRESHOLD: 15,
+    FIDGET_WINDOW: 30000,
+
+    STABLE_THRESHOLD: 1.5,
+    DISTRACTION_THRESHOLD: 5.0,
+    LOW_DELTA_LIMIT: 3
+  },
+
+  onInit() {
+    console.log('Timer page init, mode: ' + this.mode + ', source: ' + this.source)
+    if (this.source === 'demo') {
+      this.useSimulated = true
+    }
+  },
+
+  onDestroy() {
+    this.cleanup()
+  },
+
+  formatTime(seconds) {
+    var h = Math.floor(seconds / 3600)
+    var m = Math.floor((seconds % 3600) / 60)
+    var s = seconds % 60
+    var hh = h < 10 ? '0' + h : '' + h
+    var mm = m < 10 ? '0' + m : '' + m
+    var ss = s < 10 ? '0' + s : '' + s
+    return hh + ':' + mm + ':' + ss
+  },
+
+  formatTimestamp(ts) {
+    var d = new Date(ts)
+    var h = d.getHours()
+    var m = d.getMinutes()
+    var s = d.getSeconds()
+    var hh = h < 10 ? '0' + h : '' + h
+    var mm = m < 10 ? '0' + m : '' + m
+    var ss = s < 10 ? '0' + s : '' + s
+    return hh + ':' + mm + ':' + ss
+  },
+
+  startTimer() {
+    this.status = 'running'
+    this.startTime = Date.now()
+    this.sessionStartTime = Date.now()
+    this.elapsedTime = 0
+    this.distractionCount = 0
+    this.distractions = []
+    this.isDistracted = false
+    this.distractionType = ''
+    this.observingDistraction = false
+    this.lowDeltaCount = 0
+    this.distractionCooldown = false
+    this.prevMagnitude = 9.8
+    this.sensorDataReceived = false
+    this.stillnessStartTime = 0
+    this.fidgetCount = 0
+    this.fidgetWindowStart = 0
+    this.showPhysicalAlert = false
+    this.showZoningAlert = false
+    this.showFidgetAlert = false
+    this.showVibrateAlert = false
+    this.showSedentary30 = false
+    this.showSedentary60 = false
+    this.sedentaryAlertShown30 = false
+
+    this.startTimerInterval()
+    this.startSensorMonitoring()
+  },
+
+  startTimerInterval() {
+    var self = this
+    this.timerInterval = setInterval(function() {
+      if (self.status === 'running') {
+        self.elapsedTime = Math.floor((Date.now() - self.startTime) / 1000)
+        self.checkSedentaryAlert()
+      }
+    }, 1000)
+  },
+
+  checkSedentaryAlert() {
+    if (!this.showSedentary30 && this.elapsedTime >= 1800) {
+      this.showSedentary30 = true
+      console.log('Sedentary 30min: time to stand up')
+      if (this.mode === 'focus') {
+        try { vibrator.vibrate({ mode: 'short' }) } catch (e) {}
+      }
+    }
+
+    if (!this.showSedentary60 && this.elapsedTime >= 3600 && this.distractionCount === 0) {
+      this.showSedentary60 = true
+      console.log('Sedentary 60min STRONG alert: no motion at all')
+      if (this.mode === 'focus') {
+        try { vibrator.vibrate({ mode: 'long' }) } catch (e) {}
+        setTimeout(function() { try { vibrator.vibrate({ mode: 'long' }) } catch (e) {} }, 500)
+      }
+    }
+  },
+
+  startSensorMonitoring() {
+    var self = this
+    if (this.useSimulated) {
+      this.startSimulatedSensor()
+      return
+    }
+    try {
+      sensor.subscribeAccelerometer({
+        interval: 'normal',
+        callback: function(ret) {
+          self.sensorDataReceived = true
+          self.handleSensorData(ret.x, ret.y, ret.z)
+        },
+        fail: function(msg, code) {
+          console.log('Sensor unavailable (code: ' + code + '), switching to simulated mode: ' + msg)
+          self.useSimulated = true
+          self.startSimulatedSensor()
+        }
+      })
+      this.sensorSubscribed = true
+
+      var dataCheckCount = 0
+      var lastMagnitude = null
+      var dataChangeInterval = setInterval(function() {
+        if (self.status !== 'running') {
+          clearInterval(dataChangeInterval)
+          return
+        }
+        if (self.prevMagnitude !== lastMagnitude) {
+          lastMagnitude = self.prevMagnitude
+          dataCheckCount = 0
+        } else {
+          dataCheckCount++
+          if (dataCheckCount >= 3 && !self.useSimulated) {
+            console.log('Sensor data frozen for 3s, switching to simulated mode')
+            self.useSimulated = true
+            if (self.sensorSubscribed) {
+              try { sensor.unsubscribeAccelerometer() } catch (e) {}
+              self.sensorSubscribed = false
+            }
+            clearInterval(dataChangeInterval)
+            self.startSimulatedSensor()
+          }
+        }
+      }, 1000)
+    } catch (e) {
+      console.log('Sensor error: ' + e)
+      this.useSimulated = true
+      this.startSimulatedSensor()
+    }
+  },
+
+  handleSensorData(x, y, z) {
+    if (this.status !== 'running') return
+
+    var magnitude = Math.sqrt(x * x + y * y + z * z)
+    var delta = Math.abs(magnitude - this.prevMagnitude)
+    this.prevMagnitude = magnitude
+
+    if (this.isDistracted) {
+      this.handleDistractionEnd(delta)
+      return
+    }
+
+    if (this.observingDistraction) {
+      this.handlePhysicalObservation(delta)
+      return
+    }
+
+    if (this.distractionCooldown) return
+
+    if (delta > this.DISTRACTION_THRESHOLD) {
+      this.observingDistraction = true
+      this.potentialDistractionStart = Date.now()
+      this.lowDeltaCount = 0
+      this.stillnessStartTime = 0
+      this.fidgetCount = 0
+      this.fidgetWindowStart = 0
+      return
+    }
+
+    if (delta < 0.5) {
+      if (this.stillnessStartTime === 0) {
+        this.stillnessStartTime = Date.now()
+      } else {
+        var stillDuration = Date.now() - this.stillnessStartTime
+        if (stillDuration >= this.ZONE_OUT_THRESHOLD) {
+          this.confirmDistraction('zoning_out', this.stillnessStartTime)
+        }
+      }
+    } else {
+      this.stillnessStartTime = 0
+    }
+
+    if (delta > this.FIDGET_MIN && delta < this.FIDGET_MAX) {
+      var now = Date.now()
+      if (this.fidgetWindowStart === 0 || (now - this.fidgetWindowStart) > this.FIDGET_WINDOW) {
+        this.fidgetWindowStart = now
+        this.fidgetCount = 1
+      } else {
+        this.fidgetCount++
+        if (this.fidgetCount >= this.FIDGET_THRESHOLD) {
+          this.confirmDistraction('fidgeting', now - this.FIDGET_WINDOW)
+        }
+      }
+    } else {
+      if (this.fidgetWindowStart > 0) {
+        var windowAge = Date.now() - this.fidgetWindowStart
+        if (windowAge > this.FIDGET_WINDOW) {
+          this.fidgetWindowStart = 0
+          this.fidgetCount = 0
+        }
+      }
+    }
+  },
+
+  handlePhysicalObservation(delta) {
+    if (delta < this.STABLE_THRESHOLD) {
+      this.lowDeltaCount++
+      if (this.lowDeltaCount >= this.LOW_DELTA_LIMIT) {
+        var observed = Date.now() - this.potentialDistractionStart
+        if (observed < this.MIN_DISTRACTION_DURATION) {
+          console.log('Brief motion ' + observed + 'ms, ignored')
+        }
+        this.observingDistraction = false
+        this.lowDeltaCount = 0
+      }
+    } else {
+      this.lowDeltaCount = 0
+    }
+
+    if (this.observingDistraction && (Date.now() - this.potentialDistractionStart >= this.MIN_DISTRACTION_DURATION)) {
+      this.confirmDistraction('physical', this.potentialDistractionStart)
+    }
+  },
+
+  handleDistractionEnd(delta) {
+    if (this.distractionType === 'physical') {
+      if (delta < this.STABLE_THRESHOLD) {
+        this.lowDeltaCount++
+        if (this.lowDeltaCount >= this.LOW_DELTA_LIMIT) {
+          this.endDistraction()
+        }
+      } else {
+        this.lowDeltaCount = 0
+      }
+    } else if (this.distractionType === 'zoning_out') {
+      if (delta > 1.0) {
+        this.endDistraction()
+      }
+    } else if (this.distractionType === 'fidgeting') {
+      if (delta < 0.3) {
+        this.lowDeltaCount++
+        if (this.lowDeltaCount >= 5) {
+          this.endDistraction()
+        }
+      } else {
+        this.lowDeltaCount = 0
+      }
+    }
+  },
+
+  confirmDistraction(type, startTime) {
+    this.observingDistraction = false
+    this.isDistracted = true
+    this.distractionType = type
+    this.distractionStartTime = startTime
+    this.distractionCount++
+    this.lowDeltaCount = 0
+    this.stillnessStartTime = 0
+    this.fidgetCount = 0
+    this.fidgetWindowStart = 0
+
+    if (type === 'physical') {
+      this.showPhysicalAlert = true
+    } else if (type === 'zoning_out') {
+      this.showZoningAlert = true
+    } else if (type === 'fidgeting') {
+      this.showFidgetAlert = true
+    }
+
+    console.log('Distraction confirmed: type=' + type + ', count=' + this.distractionCount)
+
+    if (this.mode === 'focus') {
+      if (type === 'zoning_out') {
+        try { vibrator.vibrate({ mode: 'short' }) } catch (e) {}
+        this.showVibrateAlert = true
+        var self1 = this
+        setTimeout(function() { self1.showVibrateAlert = false }, 3000)
+      } else if (type === 'fidgeting') {
+        try { vibrator.vibrate({ mode: 'short' }) } catch (e) {}
+        var self2 = this
+        setTimeout(function() {
+          try { vibrator.vibrate({ mode: 'short' }) } catch (e) {}
+        }, 400)
+        this.showVibrateAlert = true
+        setTimeout(function() { self2.showVibrateAlert = false }, 3000)
+      } else {
+        try { vibrator.vibrate({ mode: 'long' }) } catch (e) {}
+        this.showVibrateAlert = true
+        var self3 = this
+        setTimeout(function() { self3.showVibrateAlert = false }, 3000)
+      }
+    }
+  },
+
+  endDistraction() {
+    var endTime = Date.now()
+    var duration = Math.floor((endTime - this.distractionStartTime) / 1000)
+    if (duration < 1) duration = 1
+
+    this.distractions.push({
+      start: this.formatTimestamp(this.distractionStartTime),
+      end: this.formatTimestamp(endTime),
+      duration: duration,
+      type: this.distractionType
+    })
+
+    console.log('Distraction ended: type=' + this.distractionType + ', duration=' + duration + 's')
+
+    this.isDistracted = false
+    this.distractionType = ''
+    this.showPhysicalAlert = false
+    this.showZoningAlert = false
+    this.showFidgetAlert = false
+    this.distractionCooldown = true
+    this.lowDeltaCount = 0
+
+    var self = this
+    setTimeout(function() {
+      self.distractionCooldown = false
+    }, 5000)
+  },
+
+  startSimulatedSensor() {
+    this.scheduleNextSimulatedDistraction()
+  },
+
+  scheduleNextSimulatedDistraction() {
+    if (this.status !== 'running') return
+
+    var self = this
+    var delay = 20000 + Math.random() * 15000
+
+    this.simTimeout = setTimeout(function() {
+      if (self.status !== 'running') return
+
+      var rand = Math.random()
+      var type
+      if (rand < 0.5) {
+        type = 'physical'
+      } else if (rand < 0.75) {
+        type = 'zoning_out'
+      } else {
+        type = 'fidgeting'
+      }
+
+      var simStart = Date.now()
+      self.confirmDistraction(type, simStart)
+
+      var distractionDuration
+      if (type === 'physical') {
+        distractionDuration = 22000 + Math.random() * 8000
+      } else if (type === 'zoning_out') {
+        distractionDuration = 25000 + Math.random() * 10000
+      } else {
+        distractionDuration = 15000 + Math.random() * 8000
+      }
+
+      setTimeout(function() {
+        if (self.status !== 'running' || !self.isDistracted) return
+        self.endDistraction()
+        self.scheduleNextSimulatedDistraction()
+      }, distractionDuration)
+    }, delay)
+  },
+
+  pauseTimer() {
+    this.status = 'paused'
+  },
+
+  resumeTimer() {
+    this.status = 'running'
+    this.startTime = Date.now() - this.elapsedTime * 1000
+  },
+
+  stopTimer() {
+    if (this.isDistracted) {
+      this.endDistraction()
+    }
+    this.observingDistraction = false
+
+    this.status = 'finished'
+    this.cleanup()
+
+    this.$app.$def.globalData.sessionData = {
+      mode: this.mode,
+      totalTime: this.elapsedTime,
+      distractionCount: this.distractionCount,
+      distractions: this.distractions.slice(),
+      sessionStart: this.formatTimestamp(this.sessionStartTime),
+      sessionEnd: this.formatTimestamp(Date.now())
+    }
+
+    router.push({ uri: '/pages/detail' })
+  },
+
+  cleanup() {
+    if (this.timerInterval) {
+      clearInterval(this.timerInterval)
+      this.timerInterval = null
+    }
+    if (this.dataChangeInterval) {
+      clearInterval(this.dataChangeInterval)
+      this.dataChangeInterval = null
+    }
+    if (this.simTimeout) {
+      clearTimeout(this.simTimeout)
+      this.simTimeout = null
+    }
+    if (this.sensorSubscribed) {
+      try { sensor.unsubscribeAccelerometer() } catch (e) {}
+      this.sensorSubscribed = false
+    }
+  }
+}
+</script>
+
+<style>
+.container {
+  flex-direction: column;
+  align-items: center;
+  background-color: #000000;
+  padding: 20px;
+}
+
+.mode-label {
+  font-size: 14px;
+  color: #888888;
+  margin-top: 6px;
+}
+
+.timer-display {
+  font-size: 36px;
+  font-weight: bold;
+  color: #4CAF50;
+  margin-top: 20px;
+}
+
+.timer-label {
+  font-size: 12px;
+  color: #666666;
+  margin-top: 4px;
+}
+
+.distraction-count {
+  font-size: 16px;
+  color: #ffffff;
+  margin-top: 16px;
+}
+
+.observing-alert {
+  font-size: 13px;
+  color: #FFA500;
+  margin-top: 8px;
+}
+
+.distraction-alert {
+  font-size: 14px;
+  color: #FF6B6B;
+  margin-top: 8px;
+}
+
+.zone-alert {
+  font-size: 14px;
+  color: #5DADE2;
+  margin-top: 8px;
+}
+
+.fidget-alert {
+  font-size: 14px;
+  color: #F4D03F;
+  margin-top: 8px;
+}
+
+.vibrate-alert {
+  font-size: 16px;
+  font-weight: bold;
+  color: #FF9800;
+  margin-top: 4px;
+}
+
+.sim-label {
+  font-size: 11px;
+  color: #555555;
+  margin-top: 4px;
+}
+
+.sedentary-alert {
+  font-size: 13px;
+  color: #FF9800;
+  background-color: #2A1F0A;
+  padding: 6px 12px;
+  border-radius: 6px;
+  margin-top: 8px;
+  text-align: center;
+}
+
+.sedentary-alert-strong {
+  font-size: 14px;
+  font-weight: bold;
+  color: #FF6B6B;
+  background-color: #3A1A1A;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-top: 8px;
+  text-align: center;
+}
+
+.btn-row {
+  flex-direction: row;
+  justify-content: center;
+  margin-top: 24px;
+}
+
+.btn {
+  width: 100px;
+  height: 44px;
+  border-radius: 22px;
+  justify-content: center;
+  align-items: center;
+  margin: 0 6px;
+}
+
+.btn-start {
+  background-color: #4CAF50;
+}
+
+.btn-pause {
+  background-color: #FF9800;
+}
+
+.btn-stop {
+  background-color: #F44336;
+}
+
+.btn-text {
+  font-size: 16px;
+  font-weight: bold;
+  color: #ffffff;
+}
+</style>

@@ -1,0 +1,351 @@
+<template>
+  <div class="container">
+    <text class="page-title">分析报告</text>
+
+    <scroll class="content-scroll">
+      <div class="content">
+        <div class="stat-row">
+          <div class="stat-item">
+            <text class="stat-value">{{formatTime(totalTime)}}</text>
+            <text class="stat-label">专注时长</text>
+          </div>
+          <div class="stat-item">
+            <text class="stat-value">{{distractionCount}}</text>
+            <text class="stat-label">分心次数</text>
+          </div>
+          <div class="stat-item">
+            <text class="stat-value">{{focusRate}}%</text>
+            <text class="stat-label">专注率</text>
+          </div>
+        </div>
+
+        <text class="section-title">分心类型分布</text>
+        <div class="type-row" if="{{physicalCount > 0}}">
+          <text class="type-label type-physical">物理性分心</text>
+          <text class="type-count">{{physicalCount}} 次 ({{physicalPercent}}%)</text>
+        </div>
+        <div class="type-row" if="{{zoningCount > 0}}">
+          <text class="type-label type-zone">发呆走神</text>
+          <text class="type-count">{{zoningCount}} 次 ({{zoningPercent}}%)</text>
+        </div>
+        <div class="type-row" if="{{fidgetCount > 0}}">
+          <text class="type-label type-fidget">烦躁不安</text>
+          <text class="type-count">{{fidgetCount}} 次 ({{fidgetPercent}}%)</text>
+        </div>
+
+        <text class="section-title">AI 分析</text>
+        <text class="analysis-text">{{analysisText}}</text>
+
+        <text class="section-title">提升建议</text>
+        <div class="suggestion-item" for="{{suggestions}}">
+          <text class="suggestion-text">- {{$item}}</text>
+        </div>
+
+        <div class="warning-box" if="{{sedentaryWarning}}">
+          <text class="warning-title">久坐提示</text>
+          <text class="warning-text">{{sedentaryWarning}}</text>
+        </div>
+
+        <text class="mimo-tag">Powered by MiMo</text>
+      </div>
+    </scroll>
+
+    <div class="btn-home" onclick="goHome">
+      <text class="btn-text">返回首页</text>
+    </div>
+  </div>
+</template>
+
+<script>
+import router from '@system.router'
+
+export default {
+  private: {
+    totalTime: 0,
+    distractionCount: 0,
+    distractions: [],
+    focusRate: 100,
+    analysisText: '',
+    suggestions: [],
+    sedentaryWarning: '',
+    physicalCount: 0,
+    zoningCount: 0,
+    fidgetCount: 0,
+    physicalPercent: 0,
+    zoningPercent: 0,
+    fidgetPercent: 0
+  },
+
+  onInit() {
+    var data = this.$app.$def.globalData.sessionData
+    if (data) {
+      this.totalTime = data.totalTime
+      this.distractionCount = data.distractionCount
+      this.distractions = data.distractions
+    }
+    this.generateAnalysis()
+  },
+
+  generateAnalysis() {
+    var totalDistractionTime = 0
+    var i
+    this.physicalCount = 0
+    this.zoningCount = 0
+    this.fidgetCount = 0
+
+    for (i = 0; i < this.distractions.length; i++) {
+      totalDistractionTime += this.distractions[i].duration
+      var t = this.distractions[i].type
+      if (t === 'zoning_out') {
+        this.zoningCount++
+      } else if (t === 'fidgeting') {
+        this.fidgetCount++
+      } else {
+        this.physicalCount++
+      }
+    }
+
+    if (this.totalTime > 0) {
+      this.focusRate = Math.round((1 - totalDistractionTime / this.totalTime) * 100)
+    }
+    if (this.focusRate < 0) this.focusRate = 0
+
+    if (this.distractionCount > 0) {
+      this.physicalPercent = Math.round(this.physicalCount / this.distractionCount * 100)
+      this.zoningPercent = Math.round(this.zoningCount / this.distractionCount * 100)
+      this.fidgetPercent = Math.round(this.fidgetCount / this.distractionCount * 100)
+    }
+
+    var avgDistraction = this.distractionCount > 0
+      ? Math.round(totalDistractionTime / this.distractionCount)
+      : 0
+
+    var dominantType = ''
+    var dominantPercent = 0
+    if (this.physicalCount >= this.zoningCount && this.physicalCount >= this.fidgetCount) {
+      dominantType = 'physical'
+      dominantPercent = this.physicalPercent
+    } else if (this.zoningCount >= this.fidgetCount) {
+      dominantType = 'zoning_out'
+      dominantPercent = this.zoningPercent
+    } else {
+      dominantType = 'fidgeting'
+      dominantPercent = this.fidgetPercent
+    }
+
+    if (this.distractionCount === 0) {
+      this.analysisText = '本轮专注表现完美，全程零分心，注意力高度集中，状态极佳。'
+      this.suggestions = ['保持当前节奏，可适当延长专注周期', '尝试挑战高效模式进一步提升自控力']
+    } else if (this.focusRate >= 90) {
+      this.analysisText = '本轮专注表现优秀，分心次数少且恢复迅速。平均每次分心仅' + avgDistraction + '秒，注意力集中度很高。'
+      this.suggestions = ['保持当前节奏，可适当延长专注周期', '尝试挑战高效模式进一步提升自控力']
+    } else {
+      var typeAnalysis = this.analyzeByType(dominantType, dominantPercent, avgDistraction)
+      this.analysisText = typeAnalysis.analysis
+      this.suggestions = typeAnalysis.suggestions
+    }
+
+    if (this.totalTime >= 3600) {
+      this.sedentaryWarning = '已连续久坐超过1小时，建议起身活动5分钟，保护颈椎和腰椎健康。'
+    } else if (this.totalTime >= 1800) {
+      this.sedentaryWarning = '已专注30分钟以上，建议做简单伸展运动，放松肩颈。'
+    }
+  },
+
+  analyzeByType(dominantType, dominantPercent, avgDistraction) {
+    var analysis = ''
+    var suggestions = []
+
+    if (dominantType === 'zoning_out') {
+      analysis = '本轮分心以"发呆走神"为主，占' + dominantPercent + '%。共分心' + this.distractionCount + '次，平均每次' + avgDistraction + '秒。数据表明您在专注过程中出现了较长时间的思维游离，身体处于静止状态但注意力已偏离任务。这通常与疲劳、缺乏互动或任务枯燥有关。'
+      suggestions = [
+        '建议采用25分钟番茄工作法，缩短单次专注时长',
+        '每25分钟起身活动1分钟，打断发呆状态',
+        '专注前设定明确的小目标，给自己"有事可做"的紧迫感',
+        '保证充足睡眠，疲劳是发呆走神的主要诱因'
+      ]
+    } else if (dominantType === 'fidgeting') {
+      analysis = '本轮分心以"烦躁不安"为主，占' + dominantPercent + '%。共分心' + this.distractionCount + '次，平均每次' + avgDistraction + '秒。检测到频繁的小幅身体动作（如转笔、抖腿、换姿势），这通常反映焦虑情绪或注意力无法稳定集中。'
+      suggestions = [
+        '尝试专注前做3次深呼吸，平复焦虑情绪',
+        '调整座椅高度和坐姿，身体舒适度直接影响专注力',
+        '可将任务拆分为更小的模块，降低心理压力',
+        '适当进行有氧运动，有助于缓解烦躁情绪'
+      ]
+    } else {
+      analysis = '本轮分心以"物理性分心"为主，占' + dominantPercent + '%。共分心' + this.distractionCount + '次，平均每次' + avgDistraction + '秒。检测到多次大幅度手部动作，说明频繁离开当前任务（如拿手机、看别处）。外界干扰是主要分心来源。'
+      suggestions = [
+        '专注前关闭手机通知，将手机放在视线外',
+        '整理桌面，减少触手可及的干扰源',
+        '留意分心高发时段，提前做好心理准备',
+        '可尝试正念呼吸练习提升注意力控制力'
+      ]
+    }
+
+    return { analysis: analysis, suggestions: suggestions }
+  },
+
+  formatTime(seconds) {
+    var m = Math.floor(seconds / 60)
+    var s = seconds % 60
+    var mm = m < 10 ? '0' + m : '' + m
+    var ss = s < 10 ? '0' + s : '' + s
+    return mm + ':' + ss
+  },
+
+  goHome() {
+    router.replace({ uri: '/pages/index' })
+  }
+}
+</script>
+
+<style>
+.container {
+  flex-direction: column;
+  align-items: center;
+  background-color: #000000;
+  padding: 16px;
+}
+
+.page-title {
+  font-size: 20px;
+  font-weight: bold;
+  color: #ffffff;
+  margin-top: 6px;
+  margin-bottom: 8px;
+}
+
+.content-scroll {
+  width: 100%;
+  flex: 1;
+}
+
+.content {
+  flex-direction: column;
+  padding: 0 4px;
+}
+
+.stat-row {
+  flex-direction: row;
+  justify-content: space-around;
+  margin-bottom: 12px;
+}
+
+.stat-item {
+  flex-direction: column;
+  align-items: center;
+}
+
+.stat-value {
+  font-size: 18px;
+  font-weight: bold;
+  color: #4CAF50;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: #888888;
+  margin-top: 2px;
+}
+
+.section-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: #534AB7;
+  margin-top: 10px;
+  margin-bottom: 6px;
+}
+
+.type-row {
+  flex-direction: row;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.type-label {
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-right: 8px;
+}
+
+.type-physical {
+  color: #FF6B6B;
+  background-color: #3A1A1A;
+}
+
+.type-zone {
+  color: #5DADE2;
+  background-color: #1A2A3A;
+}
+
+.type-fidget {
+  color: #F4D03F;
+  background-color: #3A3A1A;
+}
+
+.type-count {
+  font-size: 12px;
+  color: #aaaaaa;
+}
+
+.analysis-text {
+  font-size: 13px;
+  color: #cccccc;
+  line-height: 20px;
+}
+
+.suggestion-item {
+  margin-top: 4px;
+}
+
+.suggestion-text {
+  font-size: 13px;
+  color: #aaaaaa;
+  line-height: 20px;
+}
+
+.warning-box {
+  background-color: #1A1A0A;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 14px;
+  flex-direction: column;
+}
+
+.warning-title {
+  font-size: 13px;
+  font-weight: bold;
+  color: #FF9800;
+  margin-bottom: 4px;
+}
+
+.warning-text {
+  font-size: 12px;
+  color: #cccccc;
+  line-height: 18px;
+}
+
+.mimo-tag {
+  font-size: 11px;
+  color: #555555;
+  text-align: center;
+  margin-top: 14px;
+}
+
+.btn-home {
+  width: 100%;
+  height: 44px;
+  background-color: #534AB7;
+  border-radius: 22px;
+  justify-content: center;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.btn-text {
+  font-size: 16px;
+  font-weight: bold;
+  color: #ffffff;
+}
+</style>
